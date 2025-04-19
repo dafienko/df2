@@ -20,3 +20,4 @@ strum = "0.27.1"
 strum_macros = "0.27.1"
 crossterm = "0.29.0"
 bytesize = "2.0.1"
+clap = { version = "4.5.37", features = ["derive"] }
