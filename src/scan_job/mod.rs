@@ -2,23 +2,18 @@ mod file_util;
 mod line_item;
 mod lines_component;
 mod scan_job;
+pub mod scan_job_args;
 
 use crossterm;
-use scan_job::{ScanJob, ScanJobConfig};
-use std::path::PathBuf;
+use scan_job::ScanJob;
+use scan_job_args::ScanJobArgs;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use superconsole::components::Blank;
 use superconsole::{Component, Dimensions, DrawMode, SuperConsole};
 
-pub fn scan_dir(path: PathBuf, config: Option<ScanJobConfig>) {
-    let job = Arc::new(ScanJob::new(
-        path,
-        match config {
-            Some(config) => config,
-            None => ScanJobConfig { list_items: false },
-        },
-    ));
+pub fn scan_dir(args: ScanJobArgs) {
+    let job = Arc::new(ScanJob::new(args));
     let console = Arc::new(Mutex::new(
         SuperConsole::new()
             .ok_or_else(|| anyhow::anyhow!("Not a TTY"))

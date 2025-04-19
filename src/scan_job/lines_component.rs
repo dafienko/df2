@@ -6,8 +6,16 @@ pub struct LinesComponent {
 }
 
 impl LinesComponent {
-    pub fn new(lines: Lines, fill_width: bool) -> Self {
-        Self { lines, fill_width }
+    pub fn new(lines: Lines) -> Self {
+        Self {
+            lines,
+            fill_width: false,
+        }
+    }
+
+    pub fn with_fill_width(mut self, fill_width: bool) -> Self {
+        self.fill_width = fill_width;
+        self
     }
 }
 

@@ -1,6 +1,7 @@
 use super::file_util;
 use super::line_item::{ItemType, LineItem};
 use super::lines_component::LinesComponent;
+use super::scan_job_args::ScanJobArgs;
 use bytesize::ByteSize;
 use colored::Colorize;
 use once_cell::sync::Lazy;
@@ -8,13 +9,13 @@ use prettytable::format::Alignment;
 use prettytable::format::TableFormat;
 use prettytable::*;
 use rayon::prelude::*;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::{fs, thread, time};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use superconsole::components::bordering::{Bordered, BorderedSpec};
+use superconsole::components::DrawVertical;
 use superconsole::style::ContentStyle;
 use superconsole::{Component, Dimensions, DrawMode, Lines, SuperConsole};
 
@@ -25,6 +26,9 @@ static TABLE_FROMAT: Lazy<TableFormat> = Lazy::new(|| {
         .padding(0, 2)
         .build()
 });
+
+static EMPTY_LINE: Lazy<LinesComponent> =
+    Lazy::new(|| LinesComponent::new(Lines::from_multiline_string("\n", ContentStyle::default())));
 
 #[derive(Debug, EnumIter, PartialEq, Copy, Clone)]
 enum PortionColors {
@@ -48,17 +52,11 @@ fn color_portion(str: String, portion: PortionColors) -> String {
     .to_string()
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ScanJobConfig {
-    pub list_items: bool,
-}
-
 #[derive(Debug)]
 pub struct ScanJob {
-    path: PathBuf,
     result_items: Arc<Mutex<Vec<LineItem>>>,
     total_size: Arc<AtomicU64>,
-    config: ScanJobConfig,
+    args: ScanJobArgs,
 }
 
 impl Component for ScanJob {
@@ -70,42 +68,47 @@ impl Component for ScanJob {
             ));
         }
 
-        let stacked_bar = self.render_stacked_bar(dimensions);
+        let stacked_bar = LinesComponent::new(self.render_stacked_bar(dimensions));
 
-        let item_table = Lines::from_colored_multiline_string(
+        let item_table = LinesComponent::new(Lines::from_colored_multiline_string(
             &self.render_size_table(mode == DrawMode::Final).to_string(),
-        );
+        ))
+        .with_fill_width(true);
 
-        let mut lines = Lines::new();
-        if mode == DrawMode::Normal || self.config.list_items {
-            let mut bordered_spec = BorderedSpec::default();
-            bordered_spec.left = None;
-            bordered_spec.right = None;
-            lines.0.extend(
-                Bordered::new(LinesComponent::new(item_table, true), bordered_spec)
-                    .draw(Dimensions::new(dimensions.width, 8), mode)
-                    .unwrap()
-                    .0,
-            );
+        let mut drew_something = false;
+        let mut draw_vertical = DrawVertical::new(dimensions);
+        match mode {
+            DrawMode::Normal => {
+                drew_something = true;
+                let mut bordered_spec = BorderedSpec::default();
+                bordered_spec.left = None;
+                bordered_spec.right = None;
+                draw_vertical.draw(&Bordered::new(item_table, bordered_spec), mode)?;
+            }
+            DrawMode::Final => {
+                if self.args.list_items {
+                    drew_something = true;
+                    draw_vertical.draw(&item_table, mode)?;
+                }
+            }
         }
 
-        lines
-            .0
-            .extend(Lines::from_multiline_string("\n", ContentStyle::default()));
+        if drew_something {
+            draw_vertical.draw(&*EMPTY_LINE, mode)?;
+        }
 
-        lines.0.extend(stacked_bar.0);
+        draw_vertical.draw(&stacked_bar, mode)?;
 
-        Ok(lines)
+        Ok(draw_vertical.finish())
     }
 }
 
 impl ScanJob {
-    pub fn new(path: PathBuf, config: ScanJobConfig) -> Self {
+    pub fn new(args: ScanJobArgs) -> Self {
         Self {
-            path,
             result_items: Arc::new(Mutex::new(Vec::new())),
             total_size: Arc::new(AtomicU64::new(0)),
-            config: config,
+            args,
         }
     }
 
@@ -206,7 +209,7 @@ impl ScanJob {
 
     pub fn execute(&self) {
         let mut children_dirs = Vec::new();
-        if let Ok(entries) = fs::read_dir(&self.path) {
+        if let Ok(entries) = fs::read_dir(&self.args.directory) {
             for entry in entries.filter_map(Result::ok) {
                 if let Ok(file_type) = entry.file_type() {
                     let path = entry.path();
@@ -218,7 +221,11 @@ impl ScanJob {
                             .fetch_add(file_size, AtomicOrdering::Relaxed);
 
                         self.result_items.lock().unwrap().push(LineItem {
-                            path: path.clone().strip_prefix(&self.path).unwrap().to_path_buf(),
+                            path: path
+                                .clone()
+                                .strip_prefix(&self.args.directory)
+                                .unwrap()
+                                .to_path_buf(),
                             size: Arc::new(AtomicU64::new(file_size)),
                             item_type: ItemType::File,
                             start_time: time::Instant::now(),
@@ -235,7 +242,11 @@ impl ScanJob {
             let child_size = Arc::new(AtomicU64::new(0));
             let child_completed_time = Arc::new(Mutex::new(None));
             self.result_items.lock().unwrap().push(LineItem {
-                path: dir.clone().strip_prefix(&self.path).unwrap().to_path_buf(),
+                path: dir
+                    .clone()
+                    .strip_prefix(&self.args.directory)
+                    .unwrap()
+                    .to_path_buf(),
                 size: child_size.clone(),
                 item_type: ItemType::Directory,
                 start_time: time::Instant::now(),
