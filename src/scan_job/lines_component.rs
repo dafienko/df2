@@ -17,6 +17,10 @@ impl LinesComponent {
         self.fill_width = fill_width;
         self
     }
+
+    pub fn from_str(s: &str) -> Self {
+        Self::new(Lines::from_colored_multiline_string(s))
+    }
 }
 
 impl Component for LinesComponent {

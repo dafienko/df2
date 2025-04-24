@@ -1,4 +1,4 @@
-use super::file_util;
+use super::file_util::{self, get_dir_size};
 use super::line_item::{ItemType, LineItem};
 use super::lines_component::LinesComponent;
 use super::scan_job_args::ScanJobArgs;
@@ -9,7 +9,7 @@ use prettytable::format::Alignment;
 use prettytable::format::TableFormat;
 use prettytable::*;
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{fs, thread, time};
 use strum::IntoEnumIterator;
@@ -57,6 +57,7 @@ pub struct ScanJob {
     result_items: Arc<Mutex<Vec<LineItem>>>,
     total_size: Arc<AtomicU64>,
     args: ScanJobArgs,
+    start_time: time::Instant,
 }
 
 impl Component for ScanJob {
@@ -68,8 +69,7 @@ impl Component for ScanJob {
             ));
         }
 
-        let stacked_bar = LinesComponent::new(self.render_stacked_bar(dimensions));
-
+        let stacked_bar = LinesComponent::new(self.render_stacked_bar(dimensions, mode)?);
         let item_table = LinesComponent::new(Lines::from_colored_multiline_string(
             &self.render_size_table(mode == DrawMode::Final).to_string(),
         ))
@@ -98,6 +98,15 @@ impl Component for ScanJob {
         }
 
         draw_vertical.draw(&stacked_bar, mode)?;
+        draw_vertical.draw(
+            &LinesComponent::from_str(&format!(
+                "{:.2}",
+                time::Instant::now()
+                    .duration_since(self.start_time)
+                    .as_secs_f32()
+            )),
+            mode,
+        )?;
 
         Ok(draw_vertical.finish())
     }
@@ -109,6 +118,7 @@ impl ScanJob {
             result_items: Arc::new(Mutex::new(Vec::new())),
             total_size: Arc::new(AtomicU64::new(0)),
             args,
+            start_time: time::Instant::now(),
         }
     }
 
@@ -117,18 +127,24 @@ impl ScanJob {
         table.set_format(*TABLE_FROMAT);
 
         let scan_res = self.result_items.lock().unwrap();
-        for item in scan_res.iter() {
+        let mut remaining_list_items = 6;
+        for item in scan_res.iter().rev() {
             if !is_final && item.completed_time.lock().unwrap().is_some() {
                 continue;
             }
 
             table.add_row(item.render_row(is_final));
+
+            remaining_list_items -= 1;
+            if remaining_list_items == 0 {
+                break;
+            }
         }
 
         table
     }
 
-    fn render_stacked_bar(&self, dimensions: Dimensions) -> Lines {
+    fn render_stacked_bar(&self, dimensions: Dimensions, mode: DrawMode) -> anyhow::Result<Lines> {
         let mut bar_str = String::new();
         let items = self.result_items.lock().unwrap();
         let total_width = dimensions.width - 1;
@@ -171,24 +187,25 @@ impl ScanJob {
                 Cell::new_align(&item_size, Alignment::RIGHT),
             ]));
         }
+        legend_table.add_row(row![
+            Cell::new(&"Total".bright_white().to_string()),
+            Cell::new_align(
+                &ByteSize::b(self.total_size.load(Ordering::Relaxed)).to_string(),
+                Alignment::RIGHT
+            )
+        ]);
 
-        let mut lines = Lines::new();
-        lines
-            .0
-            .extend(Lines::from_colored_multiline_string(&legend_table.to_string()).0);
-        lines
-            .0
-            .extend(Lines::from_multiline_string("\n", ContentStyle::default()));
-        lines
-            .0
-            .extend(Lines::from_colored_multiline_string(&bar_str).0);
-        lines
+        let mut draw_vertical = DrawVertical::new(dimensions);
+        draw_vertical.draw(&LinesComponent::from_str(&legend_table.to_string()), mode)?;
+        draw_vertical.draw(&*EMPTY_LINE, mode)?;
+        draw_vertical.draw(&LinesComponent::from_str(&bar_str), mode)?;
+        Ok(draw_vertical.finish())
     }
 
     fn pre_render(&self) -> bool {
         let mut scan_res = self.result_items.lock().unwrap();
         let computed_total_size = scan_res.iter_mut().fold(0, |acc, item| {
-            item.size_render_snapshot = item.size.load(AtomicOrdering::Relaxed);
+            item.size_render_snapshot = item.size.load(Ordering::Relaxed);
             acc + item.size_render_snapshot
         });
         scan_res.sort();
@@ -201,40 +218,48 @@ impl ScanJob {
     }
 
     pub fn render_until_flag(&self, console: Arc<Mutex<SuperConsole>>, stop_flag: Arc<AtomicBool>) {
-        while !stop_flag.load(AtomicOrdering::Relaxed) {
+        while !stop_flag.load(Ordering::Relaxed) {
             console.lock().unwrap().render(&self).unwrap();
             thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
-    pub fn execute(&self) {
+    pub fn execute(&self, console: Arc<Mutex<SuperConsole>>) {
         let mut children_dirs = Vec::new();
-        if let Ok(entries) = fs::read_dir(&self.args.directory) {
-            for entry in entries.filter_map(Result::ok) {
-                if let Ok(file_type) = entry.file_type() {
-                    let path = entry.path();
-                    if file_type.is_dir() {
-                        children_dirs.push(path);
-                    } else if file_type.is_file() {
-                        let file_size = entry.path().metadata().map(|m| m.len()).unwrap_or(0);
-                        self.total_size
-                            .fetch_add(file_size, AtomicOrdering::Relaxed);
+        match fs::read_dir(&self.args.directory) {
+            Ok(entries) => {
+                for entry in entries.filter_map(Result::ok) {
+                    if let Ok(file_type) = entry.file_type() {
+                        let path = entry.path();
+                        if file_type.is_dir() {
+                            children_dirs.push(path);
+                        } else if file_type.is_file() {
+                            let file_size = entry.path().metadata().map(|m| m.len()).unwrap_or(0);
+                            self.total_size.fetch_add(file_size, Ordering::Relaxed);
 
-                        self.result_items.lock().unwrap().push(LineItem {
-                            path: path
-                                .clone()
-                                .strip_prefix(&self.args.directory)
-                                .unwrap()
-                                .to_path_buf(),
-                            size: Arc::new(AtomicU64::new(file_size)),
-                            item_type: ItemType::File,
-                            start_time: time::Instant::now(),
-                            completed_time: Arc::new(Mutex::new(Some(time::Instant::now()))),
-                            size_render_snapshot: file_size,
-                            parent_size_render_snapshot: 0,
-                        });
+                            self.result_items.lock().unwrap().push(LineItem {
+                                path: path
+                                    .clone()
+                                    .strip_prefix(&self.args.directory)
+                                    .unwrap()
+                                    .to_path_buf(),
+                                size: Arc::new(AtomicU64::new(file_size)),
+                                item_type: ItemType::File,
+                                start_time: time::Instant::now(),
+                                completed_time: Arc::new(Mutex::new(Some(time::Instant::now()))),
+                                size_render_snapshot: file_size,
+                                parent_size_render_snapshot: 0,
+                            });
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                console.lock().unwrap().emit(Lines::from_multiline_string(
+                    &format!("Error reading directory: {}", e),
+                    ContentStyle::default(),
+                ));
+                return;
             }
         }
 
@@ -257,10 +282,10 @@ impl ScanJob {
 
             let total_size_clone = self.total_size.clone();
             let update_size = Arc::new(Mutex::new(move |add: u64| {
-                child_size.fetch_add(add, AtomicOrdering::Relaxed);
-                total_size_clone.fetch_add(add, AtomicOrdering::Relaxed);
+                child_size.fetch_add(add, Ordering::Relaxed);
+                total_size_clone.fetch_add(add, Ordering::Relaxed);
             }));
-            file_util::get_dir_size(dir, update_size);
+            file_util::get_dir_size(dir, update_size, console.clone());
 
             child_completed_time
                 .lock()

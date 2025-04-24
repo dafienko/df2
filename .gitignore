@@ -1,3 +1,5 @@
 /target
 .zed
 .vscode
+.DS_Sore
+flamegraph.svg

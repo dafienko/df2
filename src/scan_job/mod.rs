@@ -1,4 +1,4 @@
-mod file_util;
+pub mod file_util;
 mod line_item;
 mod lines_component;
 mod scan_job;
@@ -7,7 +7,7 @@ pub mod scan_job_args;
 use crossterm;
 use scan_job::ScanJob;
 use scan_job_args::ScanJobArgs;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use superconsole::components::Blank;
 use superconsole::{Component, Dimensions, DrawMode, SuperConsole};
@@ -29,8 +29,8 @@ pub fn scan_dir(args: ScanJobArgs) {
         let stop_flag_clone = stop_flag.clone();
         s.spawn(move |_| job_clone2.render_until_flag(console_clone.clone(), stop_flag_clone));
 
-        job_clone.execute();
-        stop_flag.store(true, AtomicOrdering::Relaxed);
+        job_clone.execute(console.clone());
+        stop_flag.store(true, Ordering::Relaxed);
     })
     .unwrap();
 
