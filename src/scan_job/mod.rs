@@ -15,7 +15,7 @@ use superconsole::components::Blank;
 use superconsole::{Component, Dimensions, DrawMode, SuperConsole};
 
 pub fn scan_dir(args: ScanJobArgs, size_cache: Arc<Mutex<HashMap<String, u64>>>) -> Vec<String> {
-    let job = Arc::new(ScanJob::new(args));
+    let job = Arc::new(ScanJob::new(args.clone()));
     let console = Arc::new(Mutex::new(
         SuperConsole::new()
             .ok_or_else(|| anyhow::anyhow!("Not a TTY"))
@@ -35,6 +35,10 @@ pub fn scan_dir(args: ScanJobArgs, size_cache: Arc<Mutex<HashMap<String, u64>>>)
             size_cache,
             Arc::new(move |msg: String| {
                 {
+                    if !args.verbose {
+                        return;
+                    }
+
                     let lines = LinesComponent::from_str(&msg)
                         .draw(
                             Dimensions::new(

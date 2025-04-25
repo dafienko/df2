@@ -1,6 +1,8 @@
 use crossbeam::channel::{unbounded, Receiver, Sender};
+use dashmap::DashSet;
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::DirEntryExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,6 +33,7 @@ struct Ctrl {
     channel_ctrl: Mutex<ChannelCtrl>,
     stop_flag: AtomicBool,
     on_error: Arc<ErrorHandler>,
+    visited: DashSet<u64>,
 }
 
 impl Ctrl {
@@ -123,6 +126,10 @@ impl ProcessMessage {
     }
 
     fn traverse_path(msg: &Arc<Self>) {
+        if msg.path.starts_with("/dev/fd") {
+            return;
+        }
+
         match fs::read_dir(&msg.path) {
             Ok(entries) => {
                 let mut greedy_msg = None;
@@ -130,6 +137,12 @@ impl ProcessMessage {
                 let mut files = vec![];
                 for entry in entries {
                     if let Ok(file_type) = entry.file_type() {
+                        let ino = entry.ino();
+                        if msg.ctrl.visited.contains(&ino) {
+                            continue;
+                        }
+                        msg.ctrl.visited.insert(ino);
+
                         if file_type.is_dir() {
                             let mut child_msg = ProcessMessage::from_parent(
                                 msg.clone(),
@@ -235,6 +248,7 @@ pub fn get_dir_size(
         }),
         stop_flag: AtomicBool::new(false),
         on_error,
+        visited: DashSet::new(),
     });
     let root_msg = Arc::new(ProcessMessage::new(
         root.to_string(),
