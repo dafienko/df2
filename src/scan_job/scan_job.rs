@@ -51,9 +51,11 @@ pub fn color_portion(str: String, portion: PortionColor) -> String {
     .to_string()
 }
 
+#[derive(Debug)]
 pub struct ScanJob {
     scan_view: Arc<Mutex<Vec<Arc<ItemView>>>>,
     args: ScanJobArgs,
+    pub result: Arc<Mutex<Vec<String>>>,
 }
 
 impl Component for ScanJob {
@@ -85,20 +87,12 @@ impl Component for ScanJob {
 
         let mut drew_something = false;
         let mut draw_vertical = DrawVertical::new(dimensions);
-        match mode {
-            DrawMode::Normal => {
-                drew_something = true;
-                let mut bordered_spec = BorderedSpec::default();
-                bordered_spec.left = None;
-                bordered_spec.right = None;
-                draw_vertical.draw(&Bordered::new(item_table, bordered_spec), mode)?;
-            }
-            DrawMode::Final => {
-                // if self.args.list_items {
-                //     drew_something = true;
-                //     draw_vertical.draw(&item_table, mode)?;
-                // }
-            }
+        if let DrawMode::Normal = mode {
+            drew_something = true;
+            let mut bordered_spec = BorderedSpec::default();
+            bordered_spec.left = None;
+            bordered_spec.right = None;
+            draw_vertical.draw(&Bordered::new(item_table, bordered_spec), mode)?;
         }
 
         if drew_something {
@@ -116,6 +110,7 @@ impl ScanJob {
         Self {
             scan_view: Arc::new(Mutex::new(Vec::new())),
             args,
+            result: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -199,18 +194,23 @@ impl ScanJob {
                 ));
             } else {
                 other_size -= item.size_snapshot;
-                legend_table.add_row(item.render_legend_row(i, portion));
+                let (row, show_index) = item.render_legend_row(i, portion, did_aggregate_other);
+                if mode == DrawMode::Final && show_index {
+                    self.result.lock().unwrap().push(item.path.clone());
+                }
+                legend_table.add_row(row);
             }
         }
         if did_aggregate_other && self.args.list_items && mode == DrawMode::Final {
             for i in PortionColor::iter().count() - 1..line_items.len() {
                 let j = len - i - 1;
                 let item = &line_items[j];
-                legend_table.add_row(item.render_legend_row(i, PortionColor::PortionLast));
+                let (row, _) = item.render_legend_row(i, PortionColor::PortionLast, true);
+                legend_table.add_row(row);
             }
         }
         legend_table.add_row(LineItem::render_legend_row_other(
-            &"Total".bright_white().bold().to_string(),
+            &self.args.directory.bright_white().bold().to_string(),
             total_size,
         ));
 
@@ -257,15 +257,19 @@ impl ScanJob {
         }
     }
 
-    pub fn execute<F>(&self, on_error: Arc<F>)
+    pub fn execute<F>(&self, size_cache: Arc<Mutex<HashMap<String, u64>>>, on_error: Arc<F>)
     where
         F: Fn(String) + Send + Sync + 'static,
     {
         get_dir_size(
             &self.args.directory,
-            Arc::new(Mutex::new(HashMap::new())),
+            size_cache,
             self.scan_view.clone(),
             on_error,
         );
+    }
+
+    pub fn get_result(self) -> Vec<String> {
+        Arc::try_unwrap(self.result).unwrap().into_inner().unwrap()
     }
 }

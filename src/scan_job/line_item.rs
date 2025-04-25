@@ -5,9 +5,8 @@ use prettytable::format::Alignment;
 use prettytable::*;
 use std::cmp::Ordering;
 use std::time;
-use strum::IntoEnumIterator;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ItemType {
     Directory,
     File,
@@ -58,7 +57,12 @@ impl LineItem {
         return row;
     }
 
-    pub fn render_legend_row(&self, i: usize, portion: PortionColor) -> Row {
+    pub fn render_legend_row(
+        &self,
+        i: usize,
+        portion: PortionColor,
+        aggregated_other: bool,
+    ) -> (Row, bool) {
         let item_name = self.path.clone();
         let item_name = match self.item_type {
             ItemType::Directory => item_name.bright_cyan(),
@@ -66,20 +70,24 @@ impl LineItem {
         }
         .to_string();
 
-        let index_str =
-            match portion == PortionColor::PortionLast || i >= PortionColor::iter().count() {
-                true => String::from(""),
-                false => format!("[{}]", i + 1),
-            };
+        let show_index = !(portion == PortionColor::PortionLast && aggregated_other)
+            && self.item_type == ItemType::Directory;
+        let index_str = match show_index {
+            true => format!("[{}]", i + 1),
+            false => String::from(""),
+        };
         let index_str = color_portion(index_str, portion);
 
         let item_size = ByteSize::b(self.size_snapshot).to_string();
 
-        Row::new(vec![
-            Cell::new(&index_str),
-            Cell::new(&item_name),
-            Cell::new_align(&item_size, Alignment::RIGHT),
-        ])
+        (
+            Row::new(vec![
+                Cell::new(&index_str),
+                Cell::new(&item_name),
+                Cell::new_align(&item_size, Alignment::RIGHT),
+            ]),
+            show_index,
+        )
     }
 
     pub fn render_legend_row_other(label: &str, size: u64) -> Row {

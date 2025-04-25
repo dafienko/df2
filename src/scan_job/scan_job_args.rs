@@ -1,7 +1,7 @@
 use clap::Parser;
 
 /// Calculate the size of a directory and its contents
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(version, about, long_about = None)]
 pub struct ScanJobArgs {
     /// Directory to scan
@@ -11,4 +11,8 @@ pub struct ScanJobArgs {
     /// List all directories and files in the directory after scanning
     #[arg(short, long, default_value_t = false)]
     pub list_items: bool,
+
+    /// Cache the scan results and allow further traversal
+    #[arg(short, long, default_value_t = false)]
+    pub interactive_mode: bool,
 }

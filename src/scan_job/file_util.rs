@@ -6,12 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time;
 
+#[derive(Debug)]
 pub struct DirectoryScanProgress {
     pub start_time: time::Instant,
     pub completed_time: Arc<Mutex<Option<time::Instant>>>,
     pub size: Arc<AtomicU64>,
 }
 
+#[derive(Debug)]
 pub enum ItemView {
     Directory(String, DirectoryScanProgress),
     File(String, u64),
@@ -185,9 +187,11 @@ impl ProcessMessage {
     }
 
     fn process(msg: &Arc<Self>) {
-        if let Some(cache) = msg.cache_ref.lock().unwrap().get(&msg.path) {
-            msg.add_size(*cache);
-            return;
+        if msg.render_children.is_none() {
+            if let Some(cache) = msg.cache_ref.lock().unwrap().get(&msg.path) {
+                msg.add_size(*cache);
+                return;
+            }
         }
 
         ProcessMessage::traverse_path(msg);
