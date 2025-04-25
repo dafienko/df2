@@ -1,17 +1,16 @@
-use super::file_util::{self, get_dir_size};
+use super::file_util::get_dir_size;
+use super::file_util::ItemView;
 use super::line_item::{ItemType, LineItem};
 use super::lines_component::LinesComponent;
 use super::scan_job_args::ScanJobArgs;
-use bytesize::ByteSize;
 use colored::Colorize;
 use once_cell::sync::Lazy;
-use prettytable::format::Alignment;
 use prettytable::format::TableFormat;
 use prettytable::*;
-use rayon::prelude::*;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::{fs, thread, time};
+use std::thread;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use superconsole::components::bordering::{Bordered, BorderedSpec};
@@ -31,7 +30,7 @@ static EMPTY_LINE: Lazy<LinesComponent> =
     Lazy::new(|| LinesComponent::new(Lines::from_multiline_string("\n", ContentStyle::default())));
 
 #[derive(Debug, EnumIter, PartialEq, Copy, Clone)]
-enum PortionColors {
+pub enum PortionColor {
     Portion1,
     Portion2,
     Portion3,
@@ -40,38 +39,47 @@ enum PortionColors {
     PortionLast,
 }
 
-fn color_portion(str: String, portion: PortionColors) -> String {
+pub fn color_portion(str: String, portion: PortionColor) -> String {
     match portion {
-        PortionColors::Portion1 => str.bright_red(),
-        PortionColors::Portion2 => str.bright_yellow(),
-        PortionColors::Portion3 => str.bright_green(),
-        PortionColors::Portion4 => str.bright_blue(),
-        PortionColors::Portion5 => str.bright_magenta(),
-        PortionColors::PortionLast => str.white(),
+        PortionColor::Portion1 => str.bright_red(),
+        PortionColor::Portion2 => str.bright_yellow(),
+        PortionColor::Portion3 => str.bright_green(),
+        PortionColor::Portion4 => str.bright_blue(),
+        PortionColor::Portion5 => str.bright_magenta(),
+        PortionColor::PortionLast => str.white(),
     }
     .to_string()
 }
 
-#[derive(Debug)]
 pub struct ScanJob {
-    result_items: Arc<Mutex<Vec<LineItem>>>,
-    total_size: Arc<AtomicU64>,
+    scan_view: Arc<Mutex<Vec<Arc<ItemView>>>>,
     args: ScanJobArgs,
-    start_time: time::Instant,
 }
 
 impl Component for ScanJob {
     fn draw_unchecked(&self, dimensions: Dimensions, mode: DrawMode) -> anyhow::Result<Lines> {
-        if !self.pre_render() {
+        let line_items = self.pre_render();
+        let total_size = line_items
+            .iter()
+            .fold(0, |acc, item| acc + item.size_snapshot);
+
+        if total_size == 0 {
             return Ok(Lines::from_multiline_string(
                 "Directory is empty",
                 ContentStyle::default(),
             ));
         }
 
-        let stacked_bar = LinesComponent::new(self.render_stacked_bar(dimensions, mode)?);
+        let stacked_bar = LinesComponent::new(self.render_stacked_bar(
+            dimensions,
+            mode,
+            &line_items,
+            total_size,
+        )?);
         let item_table = LinesComponent::new(Lines::from_colored_multiline_string(
-            &self.render_size_table(mode == DrawMode::Final).to_string(),
+            &self
+                .render_size_table(&line_items, total_size, mode == DrawMode::Final)
+                .to_string(),
         ))
         .with_fill_width(true);
 
@@ -86,10 +94,10 @@ impl Component for ScanJob {
                 draw_vertical.draw(&Bordered::new(item_table, bordered_spec), mode)?;
             }
             DrawMode::Final => {
-                if self.args.list_items {
-                    drew_something = true;
-                    draw_vertical.draw(&item_table, mode)?;
-                }
+                // if self.args.list_items {
+                //     drew_something = true;
+                //     draw_vertical.draw(&item_table, mode)?;
+                // }
             }
         }
 
@@ -98,15 +106,6 @@ impl Component for ScanJob {
         }
 
         draw_vertical.draw(&stacked_bar, mode)?;
-        draw_vertical.draw(
-            &LinesComponent::from_str(&format!(
-                "{:.2}",
-                time::Instant::now()
-                    .duration_since(self.start_time)
-                    .as_secs_f32()
-            )),
-            mode,
-        )?;
 
         Ok(draw_vertical.finish())
     }
@@ -115,25 +114,30 @@ impl Component for ScanJob {
 impl ScanJob {
     pub fn new(args: ScanJobArgs) -> Self {
         Self {
-            result_items: Arc::new(Mutex::new(Vec::new())),
-            total_size: Arc::new(AtomicU64::new(0)),
+            scan_view: Arc::new(Mutex::new(Vec::new())),
             args,
-            start_time: time::Instant::now(),
         }
     }
 
-    fn render_size_table(&self, is_final: bool) -> Table {
+    fn render_size_table(
+        &self,
+        line_items: &Vec<LineItem>,
+        total_size: u64,
+        is_final: bool,
+    ) -> Table {
         let mut table = Table::new();
         table.set_format(*TABLE_FROMAT);
 
-        let scan_res = self.result_items.lock().unwrap();
-        let mut remaining_list_items = 6;
-        for item in scan_res.iter().rev() {
-            if !is_final && item.completed_time.lock().unwrap().is_some() {
+        let mut remaining_list_items = match is_final {
+            true => u64::MAX,
+            false => 6,
+        };
+        for item in line_items.iter().rev() {
+            if !is_final && item.completed_time.is_some() {
                 continue;
             }
 
-            table.add_row(item.render_row(is_final));
+            table.add_row(item.render_row(total_size, is_final));
 
             remaining_list_items -= 1;
             if remaining_list_items == 0 {
@@ -144,28 +148,36 @@ impl ScanJob {
         table
     }
 
-    fn render_stacked_bar(&self, dimensions: Dimensions, mode: DrawMode) -> anyhow::Result<Lines> {
+    fn render_stacked_bar(
+        &self,
+        dimensions: Dimensions,
+        mode: DrawMode,
+        line_items: &Vec<LineItem>,
+        total_size: u64,
+    ) -> anyhow::Result<Lines> {
         let mut bar_str = String::new();
-        let items = self.result_items.lock().unwrap();
         let total_width = dimensions.width - 1;
         let mut remaining_width = total_width;
-        let len = items.len();
+        let len = line_items.len();
         let mut did_aggregate_other = false;
         let mut legend_table = Table::new();
         legend_table.set_format(*TABLE_FROMAT);
-        for (i, portion) in PortionColors::iter().enumerate() {
+        let mut other_size = total_size;
+        for (i, mut portion) in PortionColor::iter().enumerate() {
             if i == len || did_aggregate_other {
                 break;
             }
 
             let j = len - i - 1;
-            let item = &items[j];
-            let proportion =
-                item.size_render_snapshot as f64 / item.parent_size_render_snapshot as f64;
+            let item = &line_items[j];
+            let proportion = item.size_snapshot as f64 / total_size as f64;
             let item_width = (proportion * total_width as f64).floor() as usize;
-            let is_last = portion == PortionColors::PortionLast || i == len - 1;
+            let is_last = portion == PortionColor::PortionLast || i == len - 1;
             let width = if is_last || item_width == 0 {
                 did_aggregate_other = i != len - 1;
+                if did_aggregate_other {
+                    portion = PortionColor::PortionLast;
+                }
                 remaining_width
             } else {
                 item_width
@@ -173,27 +185,34 @@ impl ScanJob {
 
             let portion_str = "█".repeat(width);
             let portion_str = color_portion(portion_str, portion);
-            remaining_width = remaining_width.saturating_sub(width);
             bar_str.push_str(&portion_str);
+            remaining_width = remaining_width.saturating_sub(width);
 
-            let item_name = match did_aggregate_other {
-                true => String::from("Other"),
-                false => item.path.to_str().unwrap().to_string(),
-            };
-            let item_name = format!("[{}] {}", i + 1, item_name);
-            let item_size = ByteSize::b(item.size_render_snapshot).to_string();
-            legend_table.add_row(Row::new(vec![
-                Cell::new(&color_portion(item_name, portion)),
-                Cell::new_align(&item_size, Alignment::RIGHT),
-            ]));
+            if did_aggregate_other && self.args.list_items && mode == DrawMode::Final {
+                break;
+            }
+
+            if did_aggregate_other {
+                legend_table.add_row(LineItem::render_legend_row_other(
+                    &color_portion(String::from("Other"), PortionColor::PortionLast),
+                    other_size,
+                ));
+            } else {
+                other_size -= item.size_snapshot;
+                legend_table.add_row(item.render_legend_row(i, portion));
+            }
         }
-        legend_table.add_row(row![
-            Cell::new(&"Total".bright_white().to_string()),
-            Cell::new_align(
-                &ByteSize::b(self.total_size.load(Ordering::Relaxed)).to_string(),
-                Alignment::RIGHT
-            )
-        ]);
+        if did_aggregate_other && self.args.list_items && mode == DrawMode::Final {
+            for i in PortionColor::iter().count() - 1..line_items.len() {
+                let j = len - i - 1;
+                let item = &line_items[j];
+                legend_table.add_row(item.render_legend_row(i, PortionColor::PortionLast));
+            }
+        }
+        legend_table.add_row(LineItem::render_legend_row_other(
+            &"Total".bright_white().bold().to_string(),
+            total_size,
+        ));
 
         let mut draw_vertical = DrawVertical::new(dimensions);
         draw_vertical.draw(&LinesComponent::from_str(&legend_table.to_string()), mode)?;
@@ -202,95 +221,51 @@ impl ScanJob {
         Ok(draw_vertical.finish())
     }
 
-    fn pre_render(&self) -> bool {
-        let mut scan_res = self.result_items.lock().unwrap();
-        let computed_total_size = scan_res.iter_mut().fold(0, |acc, item| {
-            item.size_render_snapshot = item.size.load(Ordering::Relaxed);
-            acc + item.size_render_snapshot
-        });
-        scan_res.sort();
+    fn pre_render(&self) -> Vec<LineItem> {
+        let mut items = self
+            .scan_view
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|item| match item.as_ref() {
+                ItemView::Directory(path, progress) => LineItem {
+                    path: path.clone(),
+                    item_type: ItemType::Directory,
+                    start_time: progress.start_time,
+                    completed_time: progress.completed_time.lock().unwrap().clone(),
+                    size_snapshot: progress.size.load(Ordering::Acquire),
+                },
+                ItemView::File(path, size) => LineItem {
+                    path: path.clone(),
+                    item_type: ItemType::File,
+                    start_time: std::time::Instant::now(),
+                    completed_time: Some(std::time::Instant::now()),
+                    size_snapshot: *size,
+                },
+            })
+            .collect::<Vec<_>>();
 
-        for item in scan_res.iter_mut() {
-            item.parent_size_render_snapshot = computed_total_size;
-        }
+        items.sort();
 
-        computed_total_size > 0
+        items
     }
 
     pub fn render_until_flag(&self, console: Arc<Mutex<SuperConsole>>, stop_flag: Arc<AtomicBool>) {
         while !stop_flag.load(Ordering::Relaxed) {
-            console.lock().unwrap().render(&self).unwrap();
+            console.lock().unwrap().render(self).unwrap();
             thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
-    pub fn execute(&self, console: Arc<Mutex<SuperConsole>>) {
-        let mut children_dirs = Vec::new();
-        match fs::read_dir(&self.args.directory) {
-            Ok(entries) => {
-                for entry in entries.filter_map(Result::ok) {
-                    if let Ok(file_type) = entry.file_type() {
-                        let path = entry.path();
-                        if file_type.is_dir() {
-                            children_dirs.push(path);
-                        } else if file_type.is_file() {
-                            let file_size = entry.path().metadata().map(|m| m.len()).unwrap_or(0);
-                            self.total_size.fetch_add(file_size, Ordering::Relaxed);
-
-                            self.result_items.lock().unwrap().push(LineItem {
-                                path: path
-                                    .clone()
-                                    .strip_prefix(&self.args.directory)
-                                    .unwrap()
-                                    .to_path_buf(),
-                                size: Arc::new(AtomicU64::new(file_size)),
-                                item_type: ItemType::File,
-                                start_time: time::Instant::now(),
-                                completed_time: Arc::new(Mutex::new(Some(time::Instant::now()))),
-                                size_render_snapshot: file_size,
-                                parent_size_render_snapshot: 0,
-                            });
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                console.lock().unwrap().emit(Lines::from_multiline_string(
-                    &format!("Error reading directory: {}", e),
-                    ContentStyle::default(),
-                ));
-                return;
-            }
-        }
-
-        children_dirs.par_iter().for_each(|dir| {
-            let child_size = Arc::new(AtomicU64::new(0));
-            let child_completed_time = Arc::new(Mutex::new(None));
-            self.result_items.lock().unwrap().push(LineItem {
-                path: dir
-                    .clone()
-                    .strip_prefix(&self.args.directory)
-                    .unwrap()
-                    .to_path_buf(),
-                size: child_size.clone(),
-                item_type: ItemType::Directory,
-                start_time: time::Instant::now(),
-                completed_time: child_completed_time.clone(),
-                size_render_snapshot: 0,
-                parent_size_render_snapshot: 0,
-            });
-
-            let total_size_clone = self.total_size.clone();
-            let update_size = Arc::new(Mutex::new(move |add: u64| {
-                child_size.fetch_add(add, Ordering::Relaxed);
-                total_size_clone.fetch_add(add, Ordering::Relaxed);
-            }));
-            file_util::get_dir_size(dir, update_size, console.clone());
-
-            child_completed_time
-                .lock()
-                .unwrap()
-                .replace(time::Instant::now());
-        });
+    pub fn execute<F>(&self, on_error: Arc<F>)
+    where
+        F: Fn(String) + Send + Sync + 'static,
+    {
+        get_dir_size(
+            &self.args.directory,
+            Arc::new(Mutex::new(HashMap::new())),
+            self.scan_view.clone(),
+            on_error,
+        );
     }
 }

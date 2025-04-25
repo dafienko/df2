@@ -5,6 +5,7 @@ mod scan_job;
 pub mod scan_job_args;
 
 use crossterm;
+use lines_component::LinesComponent;
 use scan_job::ScanJob;
 use scan_job_args::ScanJobArgs;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,16 +21,28 @@ pub fn scan_dir(args: ScanJobArgs) {
             .unwrap(),
     ));
 
-    let job_clone = job.clone();
-    let console_clone = console.clone();
     crossbeam::thread::scope(|s| {
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let job_clone2 = job.clone();
+        let job_clone = job.clone();
         let stop_flag_clone = stop_flag.clone();
-        s.spawn(move |_| job_clone2.render_until_flag(console_clone.clone(), stop_flag_clone));
+        let console_clone = console.clone();
+        s.spawn(move |_| job_clone.render_until_flag(console_clone, stop_flag_clone));
 
-        job_clone.execute(console.clone());
+        let console_clone = console.clone();
+        job.execute(Arc::new(move |msg: String| {
+            {
+                let lines = LinesComponent::from_str(&msg)
+                    .draw(
+                        Dimensions::new(crossterm::terminal::size().unwrap().0.into(), usize::MAX),
+                        DrawMode::Final,
+                    )
+                    .unwrap();
+                console_clone.lock().unwrap().emit(lines)
+            }
+            .into()
+        }));
+
         stop_flag.store(true, Ordering::Relaxed);
     })
     .unwrap();
