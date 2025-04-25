@@ -22,7 +22,7 @@ pub struct LineItem {
 }
 
 impl LineItem {
-    pub fn render_row(&self, parent_size: u64, is_final: bool) -> Row {
+    pub fn render_progress_row(&self, parent_size: u64, is_final: bool) -> Row {
         let mut row = Row::empty();
 
         if !is_final {

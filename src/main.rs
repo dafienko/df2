@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 enum Instruction {
     Index(usize),
     Parent,
+    Quit,
 }
 
 fn read_instruction(max: usize) -> Instruction {
@@ -21,9 +22,11 @@ fn read_instruction(max: usize) -> Instruction {
         .read_line(&mut input)
         .expect("Failed to read line");
 
-    let input = input.trim();
+    let input = input.trim().to_lowercase();
     if input == ".." {
         return Instruction::Parent;
+    } else if input == "q" || input == "quit" || input == "exit" {
+        return Instruction::Quit;
     }
 
     let res = input.parse();
@@ -53,6 +56,9 @@ fn main() {
     if args.interactive_mode {
         loop {
             match read_instruction(dirs.len()) {
+                Instruction::Quit => {
+                    break;
+                }
                 Instruction::Index(index) => {
                     args.directory = dirs.get(index - 1).unwrap().clone();
                 }

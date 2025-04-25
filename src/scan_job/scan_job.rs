@@ -132,7 +132,7 @@ impl ScanJob {
                 continue;
             }
 
-            table.add_row(item.render_row(total_size, is_final));
+            table.add_row(item.render_progress_row(total_size, is_final));
 
             remaining_list_items -= 1;
             if remaining_list_items == 0 {
