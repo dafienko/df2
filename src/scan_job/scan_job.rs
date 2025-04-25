@@ -151,7 +151,11 @@ impl ScanJob {
         total_size: u64,
     ) -> anyhow::Result<Lines> {
         let mut bar_str = String::new();
-        let total_width = dimensions.width - 1;
+        let total_width = match self.args.full_width {
+            true => dimensions.width.saturating_sub(1),
+            false => self.args.width,
+        };
+
         let mut remaining_width = total_width;
         let len = line_items.len();
         let mut did_aggregate_other = false;

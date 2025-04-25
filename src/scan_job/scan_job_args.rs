@@ -15,4 +15,12 @@ pub struct ScanJobArgs {
     /// Cache the scan results and allow further traversal
     #[arg(short, long, default_value_t = false)]
     pub interactive_mode: bool,
+
+    /// Max chart width
+    #[arg(short, long, default_value_t = 100, conflicts_with = "full_width")]
+    pub width: usize,
+
+    /// Use full width of the terminal
+    #[arg(short, long("full"), default_value_t = false, conflicts_with = "width")]
+    pub full_width: bool,
 }
