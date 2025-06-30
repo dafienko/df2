@@ -8,15 +8,13 @@ A tool to tell what's taking up so much disk space.
 
 ## Usage
 
-### Examples
-
 ### Simple
 
 ```
 df2 .
 ```
 
-![example1](https://private-user-images.githubusercontent.com/51764318/460443627-19f4f8ba-0352-424d-96e6-77758cfba6d5.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NTEyNjcwMzEsIm5iZiI6MTc1MTI2NjczMSwicGF0aCI6Ii81MTc2NDMxOC80NjA0NDM2MjctMTlmNGY4YmEtMDM1Mi00MjRkLTk2ZTYtNzc3NThjZmJhNmQ1LnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA2MzAlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwNjMwVDA2NTg1MVomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTZjMWU0MWI5NGU0ODFhNmJkZDc3ZDBmMTYxYjQ3NWI2MWIwODVkZDRkZmRiMjE2MjIyYmM5MGRkYzQ0Y2Y4NmUmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.byKxamqwqjH4qb6cicK4iJ2GC11Sm4GbfIdFZFVfTPk)
+<img width="720" alt="Image" src="https://github.com/user-attachments/assets/19f4f8ba-0352-424d-96e6-77758cfba6d5" />
 
 ### Interactive Mode
 
@@ -24,7 +22,7 @@ df2 .
 df2 -i .
 ```
 
-https://github.com/user-attachments/assets/5faa47cb-4b1a-4e2b-9cbf-a54175b5f897
+https://github.com/user-attachments/assets/d5ce0703-2339-4e71-8655-b6a96fd3bafa
 
 ### Help
 
